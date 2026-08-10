@@ -231,6 +231,72 @@ class TestPaperTables:
             assert pval == pytest.approx(0.12, abs=0.02)
 
 
+class TestCompanionBounds:
+    """
+    Checks against the rigorous results of the companion paper,
+    AIMS Mathematics 11(6), 16366-16394 (2026), doi:10.3934/math.2026672.
+    """
+
+    SIGMA_PHI_DEG = 2.04     # campaign-level RMS pulse-angle error
+    N_QUBITS = 3
+
+    def _pooled_tv(self):
+        rows = _read(PUB / "full_stage_results.csv")
+        return {d: float(np.mean([float(r["tv_mean"]) for r in rows
+                                  if r["dist_id"] == d])) for d in DIST_IDS}
+
+    def test_angle_perturbation_envelope(self):
+        """
+        TV <= min(1, n*eta) for a uniform per-angle perturbation of eta radians.
+        Evaluated at eta = 3*sigma_phi, every pooled FULL-stage TV must fit.
+        """
+        eta = np.radians(3 * self.SIGMA_PHI_DEG)
+        bound = min(1.0, self.N_QUBITS * eta)
+        assert bound == pytest.approx(0.320, abs=5e-4)
+
+        pooled = self._pooled_tv()
+        for dist_id, tv in pooled.items():
+            assert tv <= bound, (
+                f"{dist_id} TV = {tv:.3f} exceeds the 3-sigma envelope {bound:.3f}"
+            )
+        assert max(pooled.values()) == pytest.approx(0.319, abs=1e-3)
+        assert min(pooled.values()) == pytest.approx(0.130, abs=1e-3)
+
+    def test_one_sigma_envelope_is_too_tight(self):
+        """
+        The manuscript states that evaluating the bound at one sigma puts it
+        below *every* measured group, the closest being D6-B at 0.108 against a
+        bound of 0.107. Checked here so the claim cannot silently rot.
+        """
+        bound = min(1.0, self.N_QUBITS * np.radians(self.SIGMA_PHI_DEG))
+        assert bound == pytest.approx(0.107, abs=5e-4)
+
+        rows = _read(PUB / "full_stage_results.csv")
+        per_group = {f"{r['dist_id']}-{r['ladder']}": float(r["tv_mean"])
+                     for r in rows}
+        assert all(tv > bound for tv in per_group.values()), (
+            "some group falls inside the one-sigma envelope"
+        )
+        closest = min(per_group, key=per_group.get)
+        assert closest == "D6-B"
+        assert per_group[closest] == pytest.approx(0.108, abs=1e-3)
+
+    def test_shot_count_design_rule(self):
+        """S >= 2^(n+1) log(2/delta)/eps^2, inverted at the campaign setting."""
+        shots, delta = 4096, 0.05
+        eps_ln = np.sqrt(2 ** (self.N_QUBITS + 1) * np.log(2 / delta) / shots)
+        eps_log2 = np.sqrt(2 ** (self.N_QUBITS + 1) * np.log2(2 / delta) / shots)
+        assert eps_ln == pytest.approx(0.120, abs=1e-3)
+        assert eps_log2 == pytest.approx(0.144, abs=1e-3)
+
+        pooled = self._pooled_tv()
+        # D5 and D2 sit barely above the natural-log floor; D3 and D4 well above
+        assert pooled["D5"] > eps_ln and pooled["D5"] < 1.2 * eps_ln
+        assert pooled["D2"] > eps_ln and pooled["D2"] < 1.2 * eps_ln
+        assert pooled["D3"] > 2 * eps_ln
+        assert pooled["D4"] > 2 * eps_ln
+
+
 # ------------------------------------------------------------- known issues
 
 class TestKnownIssues:
