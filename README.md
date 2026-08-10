@@ -23,6 +23,7 @@ python scripts/10_verify_distributions.py
 python scripts/20_verify_simulator.py
 python scripts/30_verify_pulse_campaign.py     # expected to FAIL, see below
 python scripts/40_verify_predictors.py
+python scripts/50_verify_schedule.py
 python -m pytest tests/ -v
 ```
 
@@ -72,7 +73,7 @@ gr-triangulum-verification/
 │   ├── campaign_distributions_check.txt
 │   ├── campaign_v2_published/               tables as printed in the paper
 │   └── pulse_campaign_v3/                   campaign-3 tables from main.tex
-├── scripts/                      four standalone verification scripts
+├── scripts/                      five standalone verification scripts
 └── tests/                        pytest suite (62 pass, 8 xfail)
 ```
 
@@ -108,6 +109,19 @@ Recomputes the campaign-3 tables from the one table carrying actual
 measurements. The metric table and the ladder-difference table reproduce
 exactly. **The marginal table does not** — this script exits non-zero by
 design. See "Known discrepancies".
+
+### `50_verify_schedule.py`
+
+Rebuilds the 700-run execution schedule and reproduces the temporal-balance
+figures that defend the campaign against drift confounding. The three stages
+are near-cotemporal (mean run index 342.0 / 347.0 / 354.5 out of 700, a spread
+of 1.8%), and every distribution spans essentially the whole campaign (mean
+positions 289.5 to 409.5, a spread of 17%). In particular D2 and D3 sit at
+329.5 and 349.5, so the fidelity gap between them cannot be an
+early-versus-late artefact.
+
+It verifies the schedule the pipeline *builds*, not the order the hardware
+actually ran — see the warning it prints.
 
 ### `40_verify_predictors.py`
 
