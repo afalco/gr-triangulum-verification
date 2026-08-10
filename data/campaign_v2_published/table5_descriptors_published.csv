@@ -1,0 +1,8 @@
+dist_id,type,shannon_entropy_bits,contrast,delta1_deg,ucry_range_deg
+D0,Uniform,3.00,1.0,0.0,0.0
+D1,Symmetric,2.85,4.0,23.6,38.9
+D2,Monotone decr.,2.45,35.0,27.8,20.4
+D3,Bimodal,2.02,20.0,53.1,102.1
+D4,Unimodal / bell,2.44,15.5,46.1,52.4
+D5,Random sparse,2.36,144.3,41.5,88.0
+D6,Random generic,2.41,19.1,35.8,45.1

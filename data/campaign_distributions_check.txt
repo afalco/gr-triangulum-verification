@@ -1,0 +1,12 @@
+# Campaign v2 distribution checksums
+# Verify with: python 00_generate_distributions.py --verify
+
+ID      H_S (bits)    Contrast  SHA-256
+--------------------------------------------------------------------------------
+D0          3.0000        1.00  1dab75aac4bebadebefe573d6d135ae6c431f168a1faef05a7ad3043abef592e
+D1          2.8464        4.00  aeb5fd8ab0f2a774bea324cac511d1afd7a98c07c2524eb285dae632aa11e9d1
+D2          2.4454       35.00  a537cc5d75f400150fcc6df2d938556d5dd86f8fd2ab9b566888ed6a4d1655db
+D3          2.0190       20.00  28167bdc338a7173fc2fc2e8efa447b2dd1c08448eb5c99b61023494325c504b
+D4          2.4397       15.50  c270b8b2dd69e3007c2660deef71e5b512ef9b5b9a2e0a33f21e720a21dea6bb
+D5          2.3625      144.35  223166ae402848e33e49e016f6f1bb6624325d321cb35ec3fc5af735160301ce
+D6          2.4117       19.14  91827208de18ee15484592d2bf5d7e55a62a1b1201d7e5474bbf671dcc83e8c3

@@ -1,0 +1,4 @@
+# Reproducibility package -- verification only, no hardware.
+numpy>=1.24
+scipy>=1.10        # Spearman / Mann-Whitney in scripts/40 and the test suite
+pytest>=7.0        # test suite only

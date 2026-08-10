@@ -1,0 +1,4 @@
+config,n_runs,fidelity_mean,fidelity_std,fidelity_min,fidelity_max
+Control,10,0.9569,0.0182,0.933,0.988
+Exp1,10,0.9628,0.0152,0.925,0.979
+Exp2,10,0.9766,0.00022,0.9763,0.9770
