@@ -297,6 +297,166 @@ class TestCompanionBounds:
         assert pooled["D4"] > 2 * eps_ln
 
 
+class TestStructuralClaim:
+    """
+    The manuscript's structural claim and the controls it now reports.
+    Added after the referee-style read; these numbers appear in the abstract,
+    Section 6 and the Conclusion, so they must not drift.
+    """
+
+    UNIFORM = np.full(8, 0.125)
+
+    def _pooled_fidelity(self):
+        rows = _read(PUB / "full_stage_results.csv")
+        return np.array([np.mean([float(r["fidelity_mean"]) for r in rows
+                                  if r["dist_id"] == d]) for d in DIST_IDS])
+
+    def _pooled_tv(self):
+        rows = _read(PUB / "full_stage_results.csv")
+        return np.array([np.mean([float(r["tv_mean"]) for r in rows
+                                  if r["dist_id"] == d]) for d in DIST_IDS])
+
+    def test_descriptors_are_collinear(self, dists):
+        """rho(Delta_1, Delta_UCRy) = 0.93 -- they are one feature, not two."""
+        stats = pytest.importorskip("scipy.stats")
+        d1 = [descriptors(dists[d]).level1_deviation for d in DIST_IDS]
+        uc = [descriptors(dists[d]).ucry_range for d in DIST_IDS]
+        assert stats.spearmanr(d1, uc)[0] == pytest.approx(0.93, abs=0.01)
+
+    def test_depolarising_prediction_has_no_purchase(self, dists):
+        """
+        Section 3 predicts TV_FULL ~ p_d * TV(p*,u). Rank correlation against
+        the data is ~0, which is what lets the structural reading stand.
+        """
+        stats = pytest.importorskip("scipy.stats")
+        tvu = [tv_distance(dists[d], self.UNIFORM) for d in DIST_IDS]
+        rho, p = stats.spearmanr(tvu, self._pooled_tv())
+        assert rho == pytest.approx(0.07, abs=0.02)
+        assert p > 0.8
+
+    def test_confounder_is_real(self, dists):
+        """Distance from uniform does correlate with tree asymmetry."""
+        stats = pytest.importorskip("scipy.stats")
+        tvu = [tv_distance(dists[d], self.UNIFORM) for d in DIST_IDS]
+        d1 = [descriptors(dists[d]).level1_deviation for d in DIST_IDS]
+        assert stats.spearmanr(d1, tvu)[0] == pytest.approx(0.82, abs=0.02)
+
+    def test_matched_cluster(self, dists):
+        """
+        D2, D4, D5, D6 sit within 0.014 of one another in TV(p*,u), yet span
+        0.882-0.964 in fidelity, still ordered by Delta_1 at rho = -0.80.
+        This is the paper's control for the confounder above.
+        """
+        stats = pytest.importorskip("scipy.stats")
+        fid = dict(zip(DIST_IDS, self._pooled_fidelity()))
+        tvu = {d: tv_distance(dists[d], self.UNIFORM) for d in DIST_IDS}
+
+        cluster = [d for d in DIST_IDS if 0.36 <= tvu[d] <= 0.39]
+        assert cluster == ["D2", "D4", "D5", "D6"]
+        spread = max(tvu[d] for d in cluster) - min(tvu[d] for d in cluster)
+        assert spread == pytest.approx(0.014, abs=1e-3)
+
+        y = [fid[d] for d in cluster]
+        assert min(y) == pytest.approx(0.882, abs=1e-3)
+        assert max(y) == pytest.approx(0.964, abs=1e-3)
+
+        d1 = [descriptors(dists[d]).level1_deviation for d in cluster]
+        uc = [descriptors(dists[d]).ucry_range for d in cluster]
+        assert stats.spearmanr(d1, y)[0] == pytest.approx(-0.80, abs=0.01)
+        assert stats.spearmanr(uc, y)[0] == pytest.approx(-0.60, abs=0.01)
+
+    def test_d0_ladders_command_identical_angles(self, dists):
+        """
+        The uniform target separates the two ladders at p = 0.0002 even though
+        both command exactly the same rotation angles -- the paper's evidence
+        that part of the ordering effect is pure gate scheduling.
+        """
+        ang = gr_angles(dists["D0"])
+        a, b = ang.ladder_angles["A"], ang.ladder_angles["B"]
+        assert np.allclose(a, b, atol=1e-12)
+        assert np.allclose(a, [90.0, 0.0, 0.0, 0.0], atol=1e-9)
+
+        rows = {r["dist_id"]: r for r in _read(PUB / "full_stage_results.csv")}
+        assert float(rows["D0"]["p_mann_whitney"]) == pytest.approx(2e-4, abs=1e-5)
+
+    def test_d3_ladders_command_different_angles(self, dists):
+        """By contrast, an asymmetric target does differ in angle content."""
+        ang = gr_angles(dists["D3"])
+        a, b = ang.ladder_angles["A"], ang.ladder_angles["B"]
+        assert not np.allclose(a, b, atol=1e-6)
+        assert np.allclose(sorted(np.round(a, 6)), sorted(np.round(b, 6)))
+        assert np.allclose(a, [90.0, -19.76, 0.0, 31.297], atol=5e-3)
+
+
+class TestStagedProtocol:
+    """
+    The stage x distribution table and what the manuscript reads off it.
+    Derived from `runs_flat_v2.csv`; the summary is vendored in
+    `data/campaign_v2_published/stage_by_dist.csv`.
+    """
+
+    def _table(self):
+        out = {}
+        for r in _read(PUB / "stage_by_dist.csv"):
+            out[(r["dist_id"], r["stage"])] = float(r["fidelity_mean"])
+        return out
+
+    def test_monotone_for_every_distribution(self):
+        """L0 < L01 < FULL, without exception. Asserted in the limitations."""
+        t = self._table()
+        for d in DIST_IDS:
+            l0, l01, full = t[(d, "L0")], t[(d, "L01")], t[(d, "FULL")]
+            assert l0 < l01 < full, f"{d}: {l0} {l01} {full}"
+
+    def test_l0_does_not_predict_full(self):
+        """
+        rho(L0, FULL) ~ 0 across the suite -- the paper's evidence that the
+        staged protocol separates error regimes rather than tracking depth.
+        """
+        stats = pytest.importorskip("scipy.stats")
+        t = self._table()
+        l0 = [t[(d, "L0")] for d in DIST_IDS]
+        l01 = [t[(d, "L01")] for d in DIST_IDS]
+        full = [t[(d, "FULL")] for d in DIST_IDS]
+
+        rho, p = stats.spearmanr(l0, full)
+        assert rho == pytest.approx(-0.04, abs=0.02)
+        assert p > 0.9
+        assert stats.spearmanr(l01, full)[0] == pytest.approx(0.86, abs=0.02)
+
+    def test_d6_reversal(self):
+        """D6 is worst at L0 and best at FULL; D2 is best at L0."""
+        t = self._table()
+        l0 = {d: t[(d, "L0")] for d in DIST_IDS}
+        full = {d: t[(d, "FULL")] for d in DIST_IDS}
+        assert min(l0, key=l0.get) == "D6" and l0["D6"] == pytest.approx(0.400, abs=1e-3)
+        assert max(full, key=full.get) == "D6" and full["D6"] == pytest.approx(0.964, abs=1e-3)
+        assert max(l0, key=l0.get) == "D2"
+
+    def test_d1_slice_matches_the_published_stage_table(self):
+        """The D1 column reproduces Table `stage_overall` of the manuscript."""
+        t = self._table()
+        assert t[("D1", "L0")] == pytest.approx(0.486, abs=1e-3)
+        assert t[("D1", "L01")] == pytest.approx(0.772, abs=1e-3)
+        assert t[("D1", "FULL")] == pytest.approx(0.909, abs=1e-3)
+
+    def test_d1_marginals_are_now_consistent(self):
+        """
+        The corrected D1 FULL marginals. These were wrong in v01-v03 and were
+        replaced with the values computed from the run-level table; they must
+        equal the marginals of the mean distributions quoted in the same
+        subsection.
+        """
+        published = {r["ladder"]: np.array([float(r[f"p_q{j}_1"]) for j in range(3)])
+                     for r in _read(PUB / "d1_marginals.csv")}
+        mean_dist = {
+            "A": np.array([0.104, 0.170, 0.120, 0.082, 0.154, 0.080, 0.172, 0.118]),
+            "B": np.array([0.093, 0.150, 0.102, 0.089, 0.151, 0.091, 0.178, 0.146]),
+        }
+        for ladder, vec in mean_dist.items():
+            assert np.allclose(marginals(vec), published[ladder], atol=2e-3), ladder
+
+
 # ------------------------------------------------------------- known issues
 
 class TestKnownIssues:

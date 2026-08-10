@@ -24,6 +24,7 @@ python scripts/20_verify_simulator.py
 python scripts/30_verify_pulse_campaign.py     # expected to FAIL, see below
 python scripts/40_verify_predictors.py
 python scripts/50_verify_schedule.py
+python scripts/60_verify_from_runs.py
 python -m pytest tests/ -v
 ```
 
@@ -46,6 +47,7 @@ and the core Grover–Rudolph implementation at
 | Hardware | required (SpinQit + Triangulum) | never |
 | Dependencies | spinqit, numpy, pandas, scipy | numpy, scipy |
 | Distributions | generated | vendored + checksum-verified against the generator |
+| Run-level data | gitignored, not published | **deposited here** (`data/campaign_v2_runs/`) |
 | Simulator | `spinqit.get_basic_simulator()`, sampled | exact state-vector, NumPy |
 | Scope | campaign v2 (gate-level, 700 runs) | campaigns v2 **and** v3 (pulse-level) |
 
@@ -71,9 +73,10 @@ gr-triangulum-verification/
 ├── data/
 │   ├── campaign_distributions.json          vendored from the campaign repo
 │   ├── campaign_distributions_check.txt
+│   ├── campaign_v2_runs/                    the 700-run dataset (primary)
 │   ├── campaign_v2_published/               tables as printed in the paper
 │   └── pulse_campaign_v3/                   campaign-3 tables from main.tex
-├── scripts/                      five standalone verification scripts
+├── scripts/                      six standalone verification scripts
 └── tests/                        pytest suite (62 pass, 8 xfail)
 ```
 
@@ -109,6 +112,20 @@ Recomputes the campaign-3 tables from the one table carrying actual
 measurements. The metric table and the ladder-difference table reproduce
 exactly. **The marginal table does not** — this script exits non-zero by
 design. See "Known discrepancies".
+
+### `60_verify_from_runs.py`
+
+The one that matters most. Every other script cross-checks published summaries;
+this one starts from `data/campaign_v2_runs/runs_flat_v2.csv` (700 rows) and
+rebuilds them. It reproduces the campaign design, the D1 stage table, the
+stage-by-distribution table, the FULL-stage results, the campaign-level readout
+diagnostics (ε(Q1) = 0.073 ± 0.019, ε(Q2) = 0.058 ± 0.022 over 175 L0 runs,
+readout gap 0.500 / 0.211 / 0.000 by stage) and the single-qubit marginals.
+
+It also establishes the result the manuscript reads off the stage table:
+**L0 performance does not predict FULL performance** (ρ = −0.04, p = 0.94),
+while L01 already orders the targets as FULL does (ρ = 0.86). D6 is the worst
+target at L0 and the best at FULL.
 
 ### `50_verify_schedule.py`
 
