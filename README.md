@@ -48,6 +48,7 @@ and the core Grover–Rudolph implementation at
 | Dependencies | spinqit, numpy, pandas, scipy | numpy, scipy |
 | Distributions | generated | vendored + checksum-verified against the generator |
 | Run-level data | gitignored, not published | **deposited here** (`data/campaign_v2_runs/`) |
+| Device log | not exported | **deposited here** (`data/device_log/`) |
 | Simulator | `spinqit.get_basic_simulator()`, sampled | exact state-vector, NumPy |
 | Scope | campaign v2 (gate-level, 700 runs) | campaigns v2 **and** v3 (pulse-level) |
 
@@ -75,9 +76,10 @@ gr-triangulum-verification/
 │   ├── campaign_distributions_check.txt
 │   ├── campaign_v2_runs/                    the 700-run dataset (primary)
 │   ├── campaign_v2_published/               tables as printed in the paper
+│   ├── device_log/                          the instrument's own job database
 │   └── pulse_campaign_v3/                   campaign-3 tables from main.tex
-├── scripts/                      six standalone verification scripts
-└── tests/                        pytest suite (62 pass, 8 xfail)
+├── scripts/                      seven standalone verification scripts
+└── tests/                        pytest suite (87 pass, 8 xfail)
 ```
 
 ---
@@ -113,6 +115,27 @@ measurements. The metric table and the ladder-difference table reproduce
 exactly. **The marginal table does not** — this script exits non-zero by
 design. See "Known discrepancies".
 
+### `70_verify_device_log.py`
+
+The only external check in the package. Everything else compares our own
+records with each other; this compares them with the instrument's. `data/device_log/`
+holds an extract of the SpinQuasar job database — 986 experiments, exported
+from the device, never touched by our pipeline — covering the benchmark
+campaign, the earlier D1 session and the characterisation experiments behind
+the error budget.
+
+On the 498 runs the two records share, the measured distributions are the same
+floating-point numbers, and the labels, timestamps and compiled circuits line
+up. Two gaps are pinned rather than glossed: the export has no entry for
+31 March, so the D3 and D2 sessions have no instrument-side corroboration, and
+no shot count appears anywhere in the database. That the missing 200 runs are
+an export gap and not a different job naming is established by fingerprinting
+all 986 deposited circuits against the commanded angles of each target — which
+recovers D1, D4, D5 and D6 and returns nothing for D2 or D3.
+
+See `data/device_log/README.md` before using the data; in particular, join on
+`experiment_id`, because job names were reused across sessions.
+
 ### `60_verify_from_runs.py`
 
 The one that matters most. Every other script cross-checks published summaries;
@@ -129,16 +152,24 @@ target at L0 and the best at FULL.
 
 ### `50_verify_schedule.py`
 
-Rebuilds the 700-run execution schedule and reproduces the temporal-balance
-figures that defend the campaign against drift confounding. The three stages
-are near-cotemporal (mean run index 342.0 / 347.0 / 354.5 out of 700, a spread
-of 1.8%), and every distribution spans essentially the whole campaign (mean
-positions 289.5 to 409.5, a spread of 17%). In particular D2 and D3 sit at
-329.5 and 349.5, so the fidelity gap between them cannot be an
-early-versus-late artefact.
+Reconstructs the execution order from the timestamps in the run record and
+tests the confound that order creates.
 
-It verifies the schedule the pipeline *builds*, not the order the hardware
-actually ran — see the warning it prints.
+The campaign was acquired **one distribution per session** — D3, D2, D5, D6,
+D4, D1, D0, between 31 March 18:01 and 2 April 10:43, each session about
+3 h 25 min — not as one interleaved pass. Within each session the four groups
+are cycled five times, so the *stage* comparison is balanced in time (mean
+positions 42.0 / 47.0 / 54.5 of 100 in every session; 342.0 / 347.0 / 354.5 of
+700 pooled). The *cross-distribution* comparison is confounded with session, so
+the script tests it: the rank correlation between execution order and pooled
+FULL-stage fidelity is +0.32 (p = 0.48), and the worst target D3 ran first
+while the second best D0 ran last.
+
+An earlier version of this script rebuilt the schedule from the constants in
+`03_run_campaign.py` and reported what `build_schedule` *would* produce. Those
+figures described the code, not the experiment, and the manuscript briefly
+repeated them. Anything that depends on execution order must be checked against
+the record.
 
 ### `40_verify_predictors.py`
 

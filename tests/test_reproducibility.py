@@ -281,20 +281,46 @@ class TestCompanionBounds:
         assert closest == "D6-B"
         assert per_group[closest] == pytest.approx(0.108, abs=1e-3)
 
+    SHOTS = 4096          # campaign orchestrator default; not recorded per run
+
     def test_shot_count_design_rule(self):
-        """S >= 2^(n+1) log(2/delta)/eps^2, inverted at the campaign setting."""
-        shots, delta = 4096, 0.05
-        eps_ln = np.sqrt(2 ** (self.N_QUBITS + 1) * np.log(2 / delta) / shots)
-        eps_log2 = np.sqrt(2 ** (self.N_QUBITS + 1) * np.log2(2 / delta) / shots)
+        """
+        S >= 2^(n+1) ln(2/delta)/eps^2 inverted at the campaign setting.
+
+        The companion uses the natural logarithm (confirmed by the authors),
+        giving eps = 0.120, and no target falls below it -- the closest is D5
+        at 0.130. The base-two value is asserted too, only to record that the
+        convention is not neutral: under base two D5 and D2 would fall below.
+        """
+        delta = 0.05
+        eps_ln = np.sqrt(2 ** (self.N_QUBITS + 1) * np.log(2 / delta) / self.SHOTS)
+        eps_log2 = np.sqrt(2 ** (self.N_QUBITS + 1) * np.log2(2 / delta) / self.SHOTS)
         assert eps_ln == pytest.approx(0.120, abs=1e-3)
         assert eps_log2 == pytest.approx(0.144, abs=1e-3)
 
         pooled = self._pooled_tv()
-        # D5 and D2 sit barely above the natural-log floor; D3 and D4 well above
-        assert pooled["D5"] > eps_ln and pooled["D5"] < 1.2 * eps_ln
-        assert pooled["D2"] > eps_ln and pooled["D2"] < 1.2 * eps_ln
-        assert pooled["D3"] > 2 * eps_ln
-        assert pooled["D4"] > 2 * eps_ln
+        assert [d for d in DIST_IDS if pooled[d] < eps_ln] == []
+        assert min(pooled.values()) == pytest.approx(0.130, abs=1e-3)
+        assert sorted(d for d in DIST_IDS if pooled[d] < eps_log2) == ["D2", "D5"]
+
+    def test_realised_sampling_error_is_an_order_of_magnitude_smaller(self):
+        """
+        E[TV] ~ (1/2) sum_k sqrt(2 p_k(1-p_k)/(pi S)) for a multinomial sample.
+        Every measured FULL-stage TV must exceed its own sampling scale by a
+        wide margin, which is what licenses treating the discrepancies as real.
+        """
+        dists = build_distributions()
+        pooled = self._pooled_tv()
+        ratios = {}
+        for d in DIST_IDS:
+            p = dists[d]
+            e = 0.5 * float(np.sum(np.sqrt(2 * p * (1 - p) / (np.pi * self.SHOTS))))
+            assert 0.012 < e < 0.017, (d, e)
+            ratios[d] = pooled[d] / e
+        assert min(ratios.values()) == pytest.approx(9.2, abs=0.2)
+        assert max(ratios.values()) == pytest.approx(25.1, abs=0.3)
+        assert min(ratios, key=ratios.get) == "D0"
+        assert max(ratios, key=ratios.get) == "D3"
 
 
 class TestStructuralClaim:
@@ -455,6 +481,211 @@ class TestStagedProtocol:
         }
         for ladder, vec in mean_dist.items():
             assert np.allclose(marginals(vec), published[ladder], atol=2e-3), ladder
+
+
+class TestExecutionOrder:
+    """
+    What the hardware actually did, from the timestamps in the run record.
+
+    These tests exist because an earlier draft asserted the opposite. The
+    scheduler in the campaign repository *can* interleave all seven
+    distributions, and the manuscript briefly claimed it had; the record shows
+    the campaign was run one distribution per session via `--dist`. Anything
+    that depends on execution order must be checked here, not against the
+    scheduler source.
+    """
+
+    RUNS = DATA / "campaign_v2_runs" / "campaign_v2_runs_clean.jsonl"
+
+    def _records(self):
+        import json
+        from datetime import datetime
+        rec = []
+        with open(self.RUNS, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if line:
+                    r = json.loads(line)
+                    r["_t"] = datetime.fromisoformat(
+                        str(r["created"]).replace("Z", "+00:00")
+                    ).replace(tzinfo=None)
+                    rec.append(r)
+        rec.sort(key=lambda r: r["_t"])
+        return rec
+
+    def test_seven_contiguous_sessions(self):
+        rec = self._records()
+        assert len(rec) == 700
+        order, seen = [], set()
+        for r in rec:
+            if r["dist_id"] not in seen:
+                seen.add(r["dist_id"]); order.append(r["dist_id"])
+        assert order == ["D3", "D2", "D5", "D6", "D4", "D1", "D0"]
+        for d in order:
+            idx = [i for i, r in enumerate(rec) if r["dist_id"] == d]
+            assert idx == list(range(idx[0], idx[0] + 100)), d
+
+    def test_stages_are_balanced_within_every_session(self):
+        """The one part of the drift argument the design does support."""
+        import statistics as st
+        rec = self._records()
+        for d in DIST_IDS:
+            s = [r for r in rec if r["dist_id"] == d]
+            m = {k: st.mean([i for i, r in enumerate(s) if r["stage"] == k])
+                 for k in ("L0", "L01", "FULL")}
+            assert m["L0"] == pytest.approx(42.0, abs=0.05)
+            assert m["L01"] == pytest.approx(47.0, abs=0.05)
+            assert m["FULL"] == pytest.approx(54.5, abs=0.05)
+
+        pooled = {k: st.mean([i for i, r in enumerate(rec) if r["stage"] == k])
+                  for k in ("L0", "L01", "FULL")}
+        assert pooled["L0"] == pytest.approx(342.0, abs=0.05)
+        assert pooled["L01"] == pytest.approx(347.0, abs=0.05)
+        assert pooled["FULL"] == pytest.approx(354.5, abs=0.05)
+
+    def test_no_systematic_session_drift(self):
+        """
+        Distribution is confounded with acquisition time, so the confound is
+        measured. rho = +0.32, p = 0.48: no degradation, and the worst target
+        ran first.
+        """
+        import statistics as st
+        stats = pytest.importorskip("scipy.stats")
+        rec = self._records()
+        order, seen = [], set()
+        for r in rec:
+            if r["dist_id"] not in seen:
+                seen.add(r["dist_id"]); order.append(r["dist_id"])
+        f = [st.mean(float(r["fidelity_vs_target"]) for r in rec
+                     if r["dist_id"] == d and r["stage"] == "FULL")
+             for d in order]
+        rho, p = stats.spearmanr(range(1, 8), f)
+        assert rho == pytest.approx(0.321, abs=0.01)
+        assert p > 0.4
+        assert order[0] == "D3" and f[0] == pytest.approx(0.871, abs=1e-3)
+        assert order[-1] == "D0" and f[-1] == pytest.approx(0.962, abs=1e-3)
+
+
+# ------------------------------------------------------- the device log
+
+class TestDeviceLog:
+    """
+    The instrument's own record, cross-checked against ours.
+
+    `data/device_log/` is an extract of the SpinQuasar job database. It was not
+    produced by our pipeline, so where it overlaps the run record the two are an
+    independent check on each other. These tests pin that agreement, and pin the
+    two facts about the extract that are easy to get wrong: `job_name` is not
+    unique, and the export is missing a day.
+    """
+
+    LOG = DATA / "device_log"
+
+    @staticmethod
+    @pytest.fixture(scope="class")
+    def log():
+        import csv
+        with open(TestDeviceLog.LOG / "device_log_paper.csv",
+                  encoding="utf-8") as fh:
+            return list(csv.DictReader(fh))
+
+    @staticmethod
+    @pytest.fixture(scope="class")
+    def runs():
+        import json
+        out = {}
+        with open(DATA / "campaign_v2_runs" / "campaign_v2_runs_clean.jsonl",
+                  encoding="utf-8") as fh:
+            for line in fh:
+                if line.strip():
+                    r = json.loads(line)
+                    out[r["run_name"]] = r
+        return out
+
+    KEYS = ("000", "001", "010", "011", "100", "101", "110", "111")
+
+    def test_experiment_id_is_the_only_safe_key(self, log):
+        assert len(log) == 986
+        assert len({r["experiment_id"] for r in log}) == 986
+        # job names were reused across sessions; a name-keyed join collides
+        assert len({r["job_name"] for r in log}) == 760
+
+    def test_measured_distributions_are_identical_to_the_run_record(
+            self, log, runs):
+        c2 = {r["job_name"][3:]: r for r in log if r["group"] == "campaign_v2"}
+        assert len(c2) == 498 and set(c2) <= set(runs)
+        worst = 0.0
+        for name, row in c2.items():
+            a = np.array([float(row[f"exp_p{k}"]) for k in self.KEYS])
+            b = np.array([runs[name]["exp_probs"][k] for k in self.KEYS])
+            worst = max(worst, float(np.abs(a - b).max()))
+        assert worst < 1e-12
+
+    def test_labels_and_clock_offset_agree(self, log, runs):
+        from datetime import datetime
+        c2 = {r["job_name"][3:]: r for r in log if r["group"] == "campaign_v2"}
+        for name, row in c2.items():
+            rec = runs[name]
+            assert (row["dist_id"], row["stage"], row["ladder"]) == \
+                   (rec["dist_id"], rec["stage"], rec["ladder"])
+            dt = (datetime.fromisoformat(row["created"])
+                  - datetime.fromisoformat(rec["created"]).replace(tzinfo=None))
+            assert dt.total_seconds() == pytest.approx(7200, abs=30)
+
+    def test_the_export_is_missing_31_march(self, log, runs):
+        c2 = {r["job_name"][3:] for r in log if r["group"] == "campaign_v2"}
+        missing = sorted(set(runs) - c2)
+        assert len(missing) == 202
+        assert sum(m.startswith(("D2", "D3")) for m in missing) == 200
+        assert [m for m in missing if not m.startswith(("D2", "D3"))] == \
+               ["D4_FULL_A_004", "D5_FULL_B_017"]
+        assert "2026-03-31" not in {r["created"][:10] for r in log}
+
+    def test_d2_and_d3_are_absent_under_every_job_name(self, log, dists):
+        """The angle fingerprint that settled the relabelling question."""
+        import json
+        from grtri.angles import gr_angles
+
+        def fingerprint(d_id):
+            a = gr_angles(dists[d_id])
+            s = {round(abs(a.phi_root), 2)}
+            s |= {round(abs(v), 2) for v in a.phi_level1.values()}
+            for lad in ("A", "B"):
+                s |= {round(abs(float(x)), 2) for x in a.ladder_angles[lad]}
+            return s - {0.0}
+
+        circuits = []
+        with open(self.LOG / "device_log_circuits.jsonl", encoding="utf-8") as fh:
+            for line in fh:
+                c = json.loads(line)
+                circuits.append({round(abs(g.get("angle", 0)), 2)
+                                 for g in c["gates"]} - {0.0})
+        hits = lambda d: sum(1 for a in circuits
+                             if len(fingerprint(d) & a) >= 2)
+        # the controls: these targets are recovered by their angles alone
+        for d in ("D1", "D4", "D5", "D6"):
+            assert hits(d) >= 49, d
+        # the question: not present, at any threshold, under any name
+        assert hits("D2") == 0
+        assert hits("D3") == 0
+
+    def test_density_matrix_diagonals_are_the_populations(self, log):
+        import json
+        by_id = {r["experiment_id"]: r for r in log}
+        worst, seen = 0.0, 0
+        with open(self.LOG / "device_log_states.jsonl", encoding="utf-8") as fh:
+            for line in fh:
+                s = json.loads(line)
+                row = by_id.get(str(s["experiment_id"]))
+                R = np.array(s["real"], float)
+                if row is None or R.size != 64 or row["exp_p000"] == "":
+                    continue
+                p = np.array([float(row[f"exp_p{k}"]) for k in self.KEYS])
+                worst = max(worst,
+                            float(np.abs(np.diag(R.reshape(8, 8)) - p).max()))
+                seen += 1
+        assert seen == 985
+        assert worst < 1e-9
 
 
 # ------------------------------------------------------------- known issues

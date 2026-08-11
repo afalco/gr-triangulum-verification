@@ -2,135 +2,162 @@
 """
 50_verify_schedule.py
 =====================
-Reproduces the temporal-balance figures quoted in the "Temporal ordering and
-session drift" paragraph of the manuscript.
+Reconstructs the execution order of the 700-run campaign from the timestamps in
+the deposited run record, and tests the drift confound that order creates.
 
-Why this matters
-----------------
-Slow drift in field homogeneity, temperature and pulse calibration is the
-standard objection to any comparison drawn across a long NMR campaign. It
-threatens two claims at once: the stage-wise progression L0 -> L01 -> FULL, and
-the cross-distribution structural analysis. The defence rests entirely on the
-execution order, so the execution order should be checkable.
+Why this script was rewritten
+-----------------------------
+An earlier version rebuilt the schedule from the constants in
+`03_run_campaign.py` and reported the temporal balance that `build_schedule`
+*would* produce if the whole suite were interleaved. It warned that it could
+not verify what actually ran. That warning turned out to be the important part:
+the campaign was executed one distribution per session, using the `--dist`
+option, not as one interleaved pass. The figures the old script produced were
+correct about the code and wrong about the experiment, and the manuscript
+briefly repeated them.
 
-The schedule is rebuilt here from the same constants as
-`experiments/campaign_v2/03_run_campaign.py`:
+This version reads `campaign_v2_runs_clean.jsonl` and reports what happened.
 
-    N_RUNS_PER_GROUP = 25
-    STAGES  = ["L0", "L01", "FULL"]
-    LADDERS = {"L0": ["A"], "L01": ["A"], "FULL": ["A", "B"]}
-
-giving 7 distributions x 4 groups = 28 groups, cycled five times in blocks of
-five runs, for 700 runs total.
-
-Caveat
-------
-This verifies the schedule the pipeline *builds*. It cannot verify that the
-campaign was executed in one pass through that schedule rather than as seven
-separately calibrated sessions -- that is a question for the experimental log,
-and it is flagged as an open query in the manuscript.
+What it establishes
+-------------------
+* the campaign ran as seven consecutive per-distribution sessions;
+* within each session the four groups are cycled five times, so the stage
+  comparison is balanced in time (mean positions 42.0 / 47.0 / 54.5 of 100 in
+  every session, 342.0 / 347.0 / 354.5 of 700 pooled);
+* the cross-distribution comparison is confounded with session, and the
+  confound is therefore tested rather than assumed away.
 
 Usage
 -----
-    python scripts/50_verify_schedule.py
+    python scripts/60_verify_from_runs.py     # metrics from the same record
+    python scripts/50_verify_schedule.py      # execution order and drift
 """
 
 from __future__ import annotations
 
-import statistics
+import json
+import statistics as st
+from datetime import datetime
 
-from _common import Report
+from _common import DATA, Report
 
 from grtri import DIST_IDS
 
-N_RUNS_PER_GROUP = 25
+RUNS = DATA / "campaign_v2_runs" / "campaign_v2_runs_clean.jsonl"
 STAGES = ("L0", "L01", "FULL")
-LADDERS = {"L0": ("A",), "L01": ("A",), "FULL": ("A", "B")}
-CYCLES = 5
 
 
-def build_schedule() -> list[tuple[str, str, str]]:
-    """Mirror of `build_schedule` in 03_run_campaign.py."""
-    groups = [(d, s, l) for d in DIST_IDS for s in STAGES for l in LADDERS[s]]
-    runs_per_cycle = N_RUNS_PER_GROUP // CYCLES
-    schedule: list[tuple[str, str, str]] = []
-    for _cycle in range(CYCLES):
-        for group in groups:
-            for _r in range(runs_per_cycle):
-                schedule.append(group)
-    return schedule
+def load():
+    rec = []
+    with open(RUNS, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if line:
+                r = json.loads(line)
+                r["_t"] = datetime.fromisoformat(
+                    str(r["created"]).replace("Z", "+00:00")).replace(tzinfo=None)
+                rec.append(r)
+    rec.sort(key=lambda r: r["_t"])
+    return rec
 
 
 def main() -> int:
-    rep = Report("Campaign schedule: temporal balance")
-    sched = build_schedule()
-    n = len(sched)
+    rep = Report("Campaign execution order, from the run record")
+    rec = load()
 
-    rep.section("Schedule shape")
-    n_groups = len(DIST_IDS) * sum(len(LADDERS[s]) for s in STAGES)
-    rep.check(n_groups == 28, "28 groups (7 distributions x 4 groups)",
-              f"{n_groups}")
-    rep.check(n == 700, "700 runs in total", f"{n}")
-    rep.check(len({sched[i] for i in range(20)}) > 1,
-              "the schedule is interleaved, not distribution-by-distribution",
-              f"first 20 runs span {len({sched[i] for i in range(20)})} groups")
+    rep.section("Record")
+    rep.check(len(rec) == 700, "700 runs with timestamps", f"{len(rec)}")
+    rep.info(f"acquired {rec[0]['_t']:%d %b %H:%M} to {rec[-1]['_t']:%d %b %H:%M}")
 
-    # ---------------------------------------------------------------- stages
-    rep.section("Stage-wise temporal balance")
-    stage_mean = {}
-    for stage in STAGES:
-        idx = [i for i, (_, s, _) in enumerate(sched) if s == stage]
-        stage_mean[stage] = statistics.mean(idx)
-        print(f"    {stage:<5} mean run index = {stage_mean[stage]:7.1f}"
-              f"   (n = {len(idx)})")
-    spread = max(stage_mean.values()) - min(stage_mean.values())
-    print(f"    spread = {spread:.1f} runs out of {n}"
-          f"  ({100 * spread / n:.1f}% of the campaign)\n")
+    # ------------------------------------------------- session structure
+    order, seen = [], set()
+    for r in rec:
+        if r["dist_id"] not in seen:
+            seen.add(r["dist_id"]); order.append(r["dist_id"])
 
-    for stage, expected in (("L0", 342.0), ("L01", 347.0), ("FULL", 354.5)):
-        rep.check(abs(stage_mean[stage] - expected) < 0.05,
-                  f"{stage} mean run index reproduces the manuscript value",
-                  f"{stage_mean[stage]:.1f} vs {expected}")
-    rep.check(spread < 20,
-              "the three stages are near-cotemporal (spread < 20 runs)",
-              f"spread = {spread:.1f}")
+    rep.section("Session structure")
+    print(f"\n  {'#':>2}  {'dist':5}{'start':>16}{'end':>8}{'duration':>12}"
+          f"{'FULL fid':>10}")
+    print("  " + "-" * 56)
+    sessions = {}
+    for i, d in enumerate(order, 1):
+        s = [r for r in rec if r["dist_id"] == d]
+        f = st.mean(float(r["fidelity_vs_target"]) for r in s
+                    if r["stage"] == "FULL")
+        sessions[d] = (s[0]["_t"], s[-1]["_t"], f)
+        start = f"{s[0]['_t']:%d %b %H:%M}"
+        end = f"{s[-1]['_t']:%H:%M}"
+        dur = str(s[-1]["_t"] - s[0]["_t"]).split(".")[0]
+        print(f"  {i:>2}  {d:5}{start:>16}{end:>8}{dur:>12}{f:>10.3f}")
+    print()
 
-    # ------------------------------------------------------- distributions
-    rep.section("Cross-distribution temporal balance")
-    dist_mean, firsts, lasts = {}, {}, {}
-    for dist_id in DIST_IDS:
-        idx = [i for i, (d, _, _) in enumerate(sched) if d == dist_id]
-        dist_mean[dist_id] = statistics.mean(idx)
-        firsts[dist_id], lasts[dist_id] = idx[0], idx[-1]
-        print(f"    {dist_id}: first = {idx[0]:3d}   last = {idx[-1]:3d}"
-              f"   mean = {dist_mean[dist_id]:7.1f}")
-    d_spread = max(dist_mean.values()) - min(dist_mean.values())
-    print(f"    mean positions span {min(dist_mean.values()):.1f} to "
-          f"{max(dist_mean.values()):.1f}"
-          f"  ({100 * d_spread / n:.1f}% of the campaign)\n")
+    rep.check(len(order) == 7, "seven sessions, one per distribution")
+    rep.check(order == ["D3", "D2", "D5", "D6", "D4", "D1", "D0"],
+              "execution order is D3, D2, D5, D6, D4, D1, D0", str(order))
 
-    rep.check(abs(min(dist_mean.values()) - 289.5) < 0.05
-              and abs(max(dist_mean.values()) - 409.5) < 0.05,
-              "mean-position range reproduces the manuscript (289.5 to 409.5)",
-              f"{min(dist_mean.values()):.1f} to {max(dist_mean.values()):.1f}")
-    rep.check(abs(100 * d_spread / n - 17.1) < 0.2,
-              "spread is 17% of the campaign", f"{100 * d_spread / n:.1f}%")
-    rep.check(max(firsts.values()) <= 120 and min(lasts.values()) >= 579,
-              "every distribution spans essentially the whole campaign",
-              f"first runs <= {max(firsts.values())}, "
-              f"last runs >= {min(lasts.values())}")
-    rep.check(abs(dist_mean["D2"] - 329.5) < 0.05
-              and abs(dist_mean["D3"] - 349.5) < 0.05,
-              "D2 and D3 are near-cotemporal (the pair raised in review)",
-              f"{dist_mean['D2']:.1f} and {dist_mean['D3']:.1f}")
+    contiguous = True
+    for d in order:
+        idx = [i for i, r in enumerate(rec) if r["dist_id"] == d]
+        if idx != list(range(idx[0], idx[0] + 100)):
+            contiguous = False
+    rep.check(contiguous,
+              "each distribution occupies a contiguous block of 100 runs",
+              "the campaign was NOT interleaved across distributions")
 
-    # ---------------------------------------------------------------- caveat
-    rep.section("What this does not establish")
-    rep.info("This verifies the schedule the pipeline builds, not the order in")
-    rep.info("which the hardware actually ran. If the seven distributions were")
-    rep.info("executed as seven separately calibrated sessions, none of the")
-    rep.info("figures above apply. That is an open query in the manuscript.")
-    rep.warn("Execution order must be confirmed against the experimental log")
+    durs = [(b - a).total_seconds() / 3600 for a, b, _ in sessions.values()]
+    rep.check(3.3 < min(durs) and max(durs) < 3.5,
+              "every session lasts about 3 h 25 min",
+              f"{min(durs):.2f}-{max(durs):.2f} h")
+
+    # ------------------------------------------------- stage balance
+    rep.section("Stage balance within each session")
+    for d in order:
+        s = [r for r in rec if r["dist_id"] == d]
+        m = {k: st.mean([i for i, r in enumerate(s) if r["stage"] == k])
+             for k in STAGES}
+        ok = all(abs(m[k] - t) < 0.05
+                 for k, t in (("L0", 42.0), ("L01", 47.0), ("FULL", 54.5)))
+        rep.check(ok, f"{d}: mean positions 42.0 / 47.0 / 54.5 of 100",
+                  f"{m['L0']:.1f} / {m['L01']:.1f} / {m['FULL']:.1f}")
+
+    pooled = {k: st.mean([i for i, r in enumerate(rec) if r["stage"] == k])
+              for k in STAGES}
+    for k, t in (("L0", 342.0), ("L01", 347.0), ("FULL", 354.5)):
+        rep.check(abs(pooled[k] - t) < 0.05,
+                  f"pooled mean run index at {k} is {t}", f"{pooled[k]:.1f}")
+
+    # ------------------------------------------------- drift tests
+    rep.section("Session effect on FULL-stage fidelity")
+    try:
+        from scipy import stats as sps
+    except ImportError:
+        rep.warn("scipy not installed; drift tests skipped")
+        return rep.finish(exit_on_failure=False)
+
+    f = [sessions[d][2] for d in order]
+    rho, p = sps.spearmanr(range(1, 8), f)
+    rep.info(f"execution order vs pooled FULL fidelity: rho={rho:+.3f} p={p:.3f}")
+    rep.check(abs(rho - 0.321) < 0.01 and p > 0.4,
+              "no systematic degradation across sessions")
+    rep.check(order[0] == "D3" and order[-1] == "D0",
+              "the worst target ran first and the second best last",
+              "the opposite of monotone deterioration")
+
+    within = []
+    for d in order:
+        s = [r for r in rec if r["dist_id"] == d and r["stage"] == "FULL"]
+        within.append(sps.spearmanr(
+            range(len(s)), [float(r["fidelity_vs_target"]) for r in s])[0])
+    rep.info(f"within-session drift rho: {min(within):+.3f} to {max(within):+.3f}"
+             f", median {st.median(within):+.3f}")
+    rep.check(min(within) > -0.25 and max(within) < 0.35,
+              "within-session drift is small and inconsistent in sign")
+
+    rep.section("What this does and does not establish")
+    rep.info("The stage comparison is balanced in time by construction.")
+    rep.info("The cross-distribution comparison is confounded with session;")
+    rep.info("the confound is tested above, not excluded by the design.")
+    rep.warn("Distribution is perfectly confounded with acquisition time")
 
     return rep.finish(exit_on_failure=False)
 

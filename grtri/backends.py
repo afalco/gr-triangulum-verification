@@ -110,7 +110,9 @@ class SpinQitBackend(Backend):
     campaign_dir
         Path to `experiments/campaign_v2` of the campaign repository.
     shots
-        Repetitions per run.  The campaign default is 4096.
+        Repetitions per run.  The campaign orchestrator sets 4096 and passes
+        it through; note that the value is not written to the run record, so
+        there is no per-run confirmation.  The earlier D1 session used 2048.
     """
 
     name = "spinqit-nmr"
