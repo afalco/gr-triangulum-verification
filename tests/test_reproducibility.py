@@ -391,6 +391,38 @@ class TestStructuralClaim:
         assert stats.spearmanr(d1, y)[0] == pytest.approx(-0.80, abs=0.01)
         assert stats.spearmanr(uc, y)[0] == pytest.approx(-0.60, abs=0.01)
 
+    def test_claim_does_not_survive_without_d2_and_d3(self, dists):
+        """
+        How much of the structural claim rests on the two sessions of 31 March.
+
+        Those two are the ones absent from the device log, and there is an open
+        question (Q8c) over whether they were acquired on the second Triangulum
+        rather than the one that logged the other five. This test measures what
+        would be left if they had to be dropped -- not because we expect to drop
+        them, but so that the answer is on record and cannot drift.
+
+        The answer is: not enough. D3 anchors the high-Delta_1 end and D2 the
+        low-Delta_1 end of the matched cluster, so removing them costs both
+        extremes at once.
+        """
+        stats = pytest.importorskip("scipy.stats")
+        fid = dict(zip(DIST_IDS, self._pooled_fidelity()))
+        d1 = {d: descriptors(dists[d]).level1_deviation for d in DIST_IDS}
+
+        rho = lambda ks: stats.spearmanr([d1[k] for k in ks],
+                                         [fid[k] for k in ks])
+        r7, p7 = rho(list(DIST_IDS))
+        assert r7 == pytest.approx(-0.643, abs=0.01) and p7 > 0.05
+
+        five = [d for d in DIST_IDS if d not in ("D2", "D3")]
+        r5, p5 = rho(five)
+        assert r5 == pytest.approx(-0.500, abs=0.01)
+        assert p5 > 0.35              # nothing survives on five points
+
+        # the matched cluster loses its most informative member
+        assert rho(["D2", "D4", "D5", "D6"])[0] == pytest.approx(-0.80, abs=0.01)
+        assert rho(["D4", "D5", "D6"])[0] == pytest.approx(-1.0, abs=1e-9)
+
     def test_d0_ladders_command_identical_angles(self, dists):
         """
         The uniform target separates the two ladders at p = 0.0002 even though
